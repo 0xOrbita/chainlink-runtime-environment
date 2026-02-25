@@ -1,0 +1,31 @@
+{
+  "_comment": "Fill in priceConsumerAddress before running",
+  "schedule": "0 */10 * * * *",
+  "chainSelectorName": "ethereum-testnet-sepolia-worldchain-1",
+  "priceConsumerAddress": "0x46638aD472507482B7D5ba45124E93D16bc97eCE",
+  "stalenessThresholdSeconds": 3600,
+  "deviationThresholdBps": 100,
+  "enableWrite": true,
+  "oracles": [
+    {
+      "name": "USDT/USD",
+      "address": "0xAE75c0638Ff015663Bf88348d4aabD2b6feE85CF",
+      "feedId": "0x0000000000000000000000000000000000000000000000000000000000000001"
+    },
+    {
+      "name": "NATIVE/USD",
+      "address": "0xA7eFA201b45c95193a7e586aF1672a93230D7923",
+      "feedId": "0x0000000000000000000000000000000000000000000000000000000000000002"
+    },
+    {
+      "name": "WETH/USD",
+      "address": "0xA5d79D3aeF96C10629a93041F31d7D4eCfD34FD5",
+      "feedId": "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782"
+    },
+    {
+      "name": "WBTC/USD",
+      "address": "0x8ab3650f02603C97dE6DeAFF927041fC536366Ae",
+      "feedId": "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
+    }
+  ]
+}
