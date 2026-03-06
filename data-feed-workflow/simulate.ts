@@ -23,36 +23,36 @@ const formattedPK = PK.startsWith("0x") ? PK : `0x${PK}`;
 const account = privateKeyToAccount(formattedPK as `0x${string}`);
 
 // Configuration Toggle
-const USE_BINANCE_PRICES = true; // Set to false to use mock prices
+const USE_REAL_PRICES = true; // Set to false to use mock prices
 
 // Mock price configurations
 const MOCK_BASE_PRICE = 100000000n; // $1.00
 const MOCK_WETH_PRICE = 190000000000n; // $1900.00
 const MOCK_WBTC_PRICE = 6000000000000n; // $60000.00
 
-// Map Oracle names to Binance symbols
-const BINANCE_SYMBOL_MAP: Record<string, string> = {
-  "USDT/USD": "USDTBIDR",
-  "NATIVE/USD": "USDTBIDR",
+// Map Oracle names to MEXC symbols
+const MEXC_SYMBOL_MAP: Record<string, string> = {
+  "USDT/USD": "USDTUSDC", // MEXC doesn't have USDTBIDR, we'll map to USDC for a 1:1 proxy or handle via $1 mock
+  "NATIVE/USD": "USDTUSDC",
   "WETH/USD": "ETHUSDT",
   "WBTC/USD": "BTCUSDT",
 };
 
-async function fetchBinancePrice(symbol: string): Promise<number | null> {
+async function fetchMexcPrice(symbol: string): Promise<number | null> {
   try {
     const response = await fetch(
-      `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`,
+      `https://api.mexc.com/api/v3/ticker/price?symbol=${symbol}`,
     );
     if (!response.ok) {
       console.warn(
-        `Failed to fetch ${symbol} from Binance: ${response.statusText}`,
+        `Failed to fetch ${symbol} from MEXC: ${response.statusText}`,
       );
       return null;
     }
     const data = (await response.json()) as { price: string };
     return parseFloat(data.price);
   } catch (error) {
-    console.warn(`Error fetching ${symbol} from Binance:`, error);
+    console.warn(`Error fetching ${symbol} from MEXC:`, error);
     return null;
   }
 }
@@ -64,7 +64,7 @@ async function getOraclePrice(oracleName: string): Promise<bigint> {
     return MOCK_BASE_PRICE;
   };
 
-  if (!USE_BINANCE_PRICES) {
+  if (!USE_REAL_PRICES) {
     // Return Mock Prices
     if (oracleName === "USDT/USD" || oracleName === "NATIVE/USD") {
       return 100000000n;
@@ -80,24 +80,24 @@ async function getOraclePrice(oracleName: string): Promise<bigint> {
     return 100000000n;
   }
 
-  const binanceSymbol = BINANCE_SYMBOL_MAP[oracleName];
-  if (!binanceSymbol) {
+  const mexcSymbol = MEXC_SYMBOL_MAP[oracleName];
+  if (!mexcSymbol) {
     console.log(
-      `[Price Source] No Binance mapping for ${oracleName}, falling back to mock.`,
+      `[Price Source] No MEXC mapping for ${oracleName}, falling back to mock.`,
     );
     return getMockPrice(oracleName);
   }
 
-  const priceNum = await fetchBinancePrice(binanceSymbol);
+  const priceNum = await fetchMexcPrice(mexcSymbol);
 
   if (priceNum !== null) {
-    console.log(`[Price Source] Binance API: ${binanceSymbol} = $${priceNum}`);
+    console.log(`[Price Source] MEXC API: ${mexcSymbol} = $${priceNum}`);
     // Convert to BigInt with 8 decimals (multiply by 10^8)
     // Math.round is used to avoid floating point precision issues when converting to BigInt
     return BigInt(Math.round(priceNum * 100000000));
   } else {
     console.log(
-      `[Price Source] Binance API fetch failed for ${oracleName}, falling back to mock.`,
+      `[Price Source] MEXC API fetch failed for ${oracleName}, falling back to mock.`,
     );
     return getMockPrice(oracleName);
   }
