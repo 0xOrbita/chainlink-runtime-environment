@@ -24,11 +24,20 @@ bun install
 Reads health status and optionally executes liquidation directly via viem.
 
 ```bash
-CRE_ETH_PRIVATE_KEY=0x... bun run simulate:direct
+bun run simulate:direct
 ```
+*(The script automatically pulls `CRE_ETH_PRIVATE_KEY` from the root `.env` file)*
 
-- `DRY_RUN = true` (default) → reads + logs only, no TX sent
-- Set `DRY_RUN = false` in `simulate.ts` to execute approve + liquidation
+- `DRY_RUN = false` (default) → execute approve + liquidation
+- Set `DRY_RUN = true` in `simulate.ts` to log and read health without sending TX.
+
+### 2. Sequential Project Run
+If you want to run both the Data Feed and Liquidation evaluators sequentially, execute the shell script from the project root:
+
+```bash
+cd ..
+./run-local.sh
+```
 
 ---
 
@@ -97,8 +106,6 @@ Key addresses (hardcoded in config):
 ## Recommended Flow
 
 ```
-1. bun run simulate:direct       <- dry run, check health logs
-2. set DRY_RUN = false           <- in simulate.ts
-3. bun run simulate:direct       <- execute on-chain directly
-4. bun run deploy                <- hand off to DON for automation
+1. ./run-local.sh                <- update oracle prices + dry run health
+2. bun run deploy                <- hand off to DON for automation
 ```
