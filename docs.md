@@ -36,7 +36,6 @@ They configure:
 - `stalenessThresholdSeconds` and `deviationThresholdBps` (Price deviation rules)
 - The array of `oracles` configurations (Source addresses and feed IDs)
 
-Target environments and RPC URLs are configured in `/Users/danuste/Desktop/hackaton/cre/custom-data-feed/project.yaml`.
 
 ## 4. Local Simulation
 The CRE simulator allows you to mock network interactions against local logic. We use it to verify the workflow functionality offline.
@@ -46,7 +45,6 @@ Ensure you are at the project root `custom-data-feed` when running the simulatio
 Run a local simulation using `cre workflow simulate`:
 
 ```bash
-cd /Users/danuste/Desktop/hackaton/cre/custom-data-feed
 cre workflow simulate ./data-feed-workflow --target local-simulation
 ```
 
@@ -54,6 +52,14 @@ cre workflow simulate ./data-feed-workflow --target local-simulation
 When you are ready, you can deploy the finalized workflow script to the Testnet DON (Decentralized Oracle Network).
 
 ```bash
-cd /Users/danuste/Desktop/hackaton/cre/custom-data-feed
 cre workflow deploy ./data-feed-workflow --target production-settings
+```
+
+```bash
+CRE_ETH_PRIVATE_KEY=$(grep 'CRE_ETH_PRIVATE_KEY=' ../.env | cut -d '=' -f2) bun run simulate.ts
+```
+
+## 6. Run simulate:direct onchain
+```bash
+bun run simulate:direct
 ```

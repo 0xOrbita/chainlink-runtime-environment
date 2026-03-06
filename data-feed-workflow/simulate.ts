@@ -14,12 +14,94 @@ import fs from "fs";
 const RPC_URL = "https://worldchain-sepolia.g.alchemy.com/public";
 
 // Load private key from env
-const PK = process.env.CRE_ETH_PRIVATE_KEY as `0x${string}`;
+const PK = process.env.CRE_ETH_PRIVATE_KEY as string;
 if (!PK || PK === "your-eth-private-key") {
   throw new Error("Missing or invalid CRE_ETH_PRIVATE_KEY in environment");
 }
 
-const account = privateKeyToAccount(PK.startsWith("0x") ? PK : `0x${PK}`);
+const formattedPK = PK.startsWith("0x") ? PK : `0x${PK}`;
+const account = privateKeyToAccount(formattedPK as `0x${string}`);
+
+// Configuration Toggle
+const USE_BINANCE_PRICES = true; // Set to false to use mock prices
+
+// Mock price configurations
+const MOCK_BASE_PRICE = 100000000n; // $1.00
+const MOCK_WETH_PRICE = 190000000000n; // $1900.00
+const MOCK_WBTC_PRICE = 6000000000000n; // $60000.00
+
+// Map Oracle names to Binance symbols
+const BINANCE_SYMBOL_MAP: Record<string, string> = {
+  "USDT/USD": "USDTBIDR",
+  "NATIVE/USD": "USDTBIDR",
+  "WETH/USD": "ETHUSDT",
+  "WBTC/USD": "BTCUSDT",
+};
+
+async function fetchBinancePrice(symbol: string): Promise<number | null> {
+  try {
+    const response = await fetch(
+      `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`,
+    );
+    if (!response.ok) {
+      console.warn(
+        `Failed to fetch ${symbol} from Binance: ${response.statusText}`,
+      );
+      return null;
+    }
+    const data = (await response.json()) as { price: string };
+    return parseFloat(data.price);
+  } catch (error) {
+    console.warn(`Error fetching ${symbol} from Binance:`, error);
+    return null;
+  }
+}
+
+async function getOraclePrice(oracleName: string): Promise<bigint> {
+  const getMockPrice = (name: string) => {
+    if (name === "WETH/USD") return MOCK_WETH_PRICE;
+    if (name === "WBTC/USD") return MOCK_WBTC_PRICE;
+    return MOCK_BASE_PRICE;
+  };
+
+  if (!USE_BINANCE_PRICES) {
+    // Return Mock Prices
+    if (oracleName === "USDT/USD" || oracleName === "NATIVE/USD") {
+      return 100000000n;
+    }
+    return getMockPrice(oracleName);
+  }
+
+  // Handle Stablecoins directly if needed, or if mapping is missing
+  if (oracleName === "USDT/USD" || oracleName === "NATIVE/USD") {
+    console.log(
+      `[Price Source] Using hardcoded $1.00 for stablecoin/native mock ${oracleName}`,
+    );
+    return 100000000n;
+  }
+
+  const binanceSymbol = BINANCE_SYMBOL_MAP[oracleName];
+  if (!binanceSymbol) {
+    console.log(
+      `[Price Source] No Binance mapping for ${oracleName}, falling back to mock.`,
+    );
+    return getMockPrice(oracleName);
+  }
+
+  const priceNum = await fetchBinancePrice(binanceSymbol);
+
+  if (priceNum !== null) {
+    console.log(`[Price Source] Binance API: ${binanceSymbol} = $${priceNum}`);
+    // Convert to BigInt with 8 decimals (multiply by 10^8)
+    // Math.round is used to avoid floating point precision issues when converting to BigInt
+    return BigInt(Math.round(priceNum * 100000000));
+  } else {
+    console.log(
+      `[Price Source] Binance API fetch failed for ${oracleName}, falling back to mock.`,
+    );
+    return getMockPrice(oracleName);
+  }
+}
 
 async function main() {
   const publicClient = createPublicClient({
@@ -48,34 +130,108 @@ async function main() {
   const abi = parseAbi([
     "function setPrice(int256 price) external",
     "function setPrice(int256 price, uint256 timestamp) external",
+    "function latestRoundData() view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)",
+    "function decimals() view returns (uint8)",
   ]);
 
   // We'll write the same mock price + timestamp structure the workflow does
-  const price = 100000000n; // $1.00 for stablecoins, we'll use this for test
+  // const basePrice = 100000000n; // $1.00 for stablecoins, we'll use this for test
+
+  const summaryTable: any[] = [];
 
   for (const oracle of config.oracles) {
     const address = oracle.address as Address;
-    console.log(`Writing price to ${oracle.name} @ ${address}...`);
+    console.log(`\n======================================`);
+    console.log(`Evaluating ${oracle.name} @ ${address}`);
+
+    // Specifically mock WETH/USD to $1900 as per requested
+    // const price = oracle.name === "WETH/USD" ? 190000000000n : basePrice;
+
+    // Get price based on configuration toggle
+    const price = await getOraclePrice(oracle.name);
 
     try {
-      // Broadcast actual transaction
+      // 1. Read before state
+      const [roundId, answer, startedAt, updatedAt, answeredInRound] =
+        (await publicClient.readContract({
+          address,
+          abi,
+          functionName: "latestRoundData",
+        })) as [bigint, bigint, bigint, bigint, bigint];
+
+      const decimals = (await publicClient.readContract({
+        address,
+        abi,
+        functionName: "decimals",
+      })) as number;
+
+      const divisor = 10n ** BigInt(decimals);
+      const whole = answer / divisor;
+      const frac = (answer % divisor).toString().padStart(decimals, "0");
+
+      console.log(
+        `[BEFORE] Current on-chain price: $${whole}.${frac} (Raw: ${answer})`,
+      );
+
+      // 2. Broadcast actual transaction
       const txHash = await walletClient.writeContract({
         address,
         abi,
         functionName: "setPrice",
         args: [price],
       });
-      console.log(`[SUCCESS] ${oracle.name} - Transaction Hash: ${txHash}`);
+      console.log(`[WRITE] Broadcasting new price transaction (${price})...`);
+      console.log(`[SUCCESS] Transaction Hash: ${txHash}`);
 
       console.log(`Waiting for confirmation...`);
       const receipt = await publicClient.waitForTransactionReceipt({
         hash: txHash,
       });
       console.log(`[CONFIRMED] Block: ${receipt.blockNumber}`);
+
+      // 3. Read after state
+      const [
+        newRoundId,
+        newAnswer,
+        newStartedAt,
+        newUpdatedAt,
+        newAnsweredInRound,
+      ] = (await publicClient.readContract({
+        address,
+        abi,
+        functionName: "latestRoundData",
+      })) as [bigint, bigint, bigint, bigint, bigint];
+
+      const newWhole = newAnswer / divisor;
+      const newFrac = (newAnswer % divisor).toString().padStart(decimals, "0");
+
+      console.log(
+        `[AFTER] New on-chain price: $${newWhole}.${newFrac} (Raw: ${newAnswer})`,
+      );
+
+      summaryTable.push({
+        Oracle: oracle.name,
+        "Before ($)": `${whole}.${frac}`,
+        "After ($)": `${newWhole}.${newFrac}`,
+        Block: receipt.blockNumber.toString(),
+        "Tx Hash": txHash,
+      });
     } catch (e: any) {
       console.log(`[FAILED] ${oracle.name} - ${e.shortMessage || e.message}`);
+      summaryTable.push({
+        Oracle: oracle.name,
+        "Before ($)": "ERROR",
+        "After ($)": "ERROR",
+        Block: "FAILED",
+        "Tx Hash": e.shortMessage || e.message,
+      });
     }
   }
+
+  console.log(`\n\n======================================`);
+  console.log(`      📊 EXECUTION SUMMARY`);
+  console.log(`======================================\n`);
+  console.table(summaryTable);
 }
 
 main().catch(console.error);

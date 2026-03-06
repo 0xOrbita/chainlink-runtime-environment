@@ -1,0 +1,23 @@
+{
+  "name": "liqudate-workflow",
+  "version": "1.0.0",
+  "main": "dist/main.js",
+  "private": true,
+  "scripts": {
+    "postinstall": "bun x cre-setup",
+    "simulate": "cd .. && cre workflow simulate ./liqudate-workflow --target staging-settings",
+    "simulate:local": "cd .. && cre workflow simulate ./liqudate-workflow --target local-simulation",
+    "simulate:direct": "CRE_ETH_PRIVATE_KEY=$(grep 'CRE_ETH_PRIVATE_KEY=' ../.env | cut -d '=' -f2) bun run simulate.ts",
+    "deploy": "cd .. && cre workflow deploy ./liqudate-workflow --target production-settings"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@chainlink/cre-sdk": "^1.1.2",
+    "viem": "2.34.0",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/bun": "1.2.21",
+    "@types/node": "^25.3.0"
+  }
+}

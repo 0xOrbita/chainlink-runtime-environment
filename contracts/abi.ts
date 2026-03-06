@@ -1,8 +1,4 @@
-/**
- * ABIs for CRE pricefeed workflow
- */
 
-// Standard Chainlink AggregatorV3Interface
 export const AGGREGATOR_V3_ABI = [
   {
     inputs: [],

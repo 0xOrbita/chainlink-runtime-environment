@@ -7,7 +7,8 @@
     "postinstall": "bun x cre-setup",
     "simulate": "cd .. && cre workflow simulate ./data-feed-workflow --target staging-settings",
     "simulate:local": "cd .. && cre workflow simulate ./data-feed-workflow --target local-simulation",
-    "deploy": "cd .. && cre workflow deploy ./data-feed-workflow --target production-settings"
+    "deploy": "cd .. && cre workflow deploy ./data-feed-workflow --target production-settings",
+    "simulate:direct": "CRE_ETH_PRIVATE_KEY=$(grep 'CRE_ETH_PRIVATE_KEY=' ../.env | cut -d '=' -f2) bun run simulate.ts"
   },
   "license": "UNLICENSED",
   "dependencies": {
@@ -17,6 +18,6 @@
   },
   "devDependencies": {
     "@types/bun": "1.2.21",
-    "@types/node": "^25.3.0"
+    "@types/node": "^25.3.5"
   }
 }
