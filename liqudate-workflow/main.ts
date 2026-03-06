@@ -3,7 +3,7 @@
  *
  * Cron-triggered workflow that:
  * 1. Fetches active borrowers from the Orbita indexer (orbita.senja.finance)
- * 2. Checks each borrower's health via IsHealthy.checkLiquidatable()
+ * 2. Checks each borrower's health via Helper.isLiquidatable()
  * 3. If undercollateralized, approves borrow token and calls liquidation()
  */
 
@@ -29,23 +29,22 @@ import {
 } from "viem";
 import { z } from "zod";
 import { ERC20_ABI, HELPER_ABI, LENDING_POOL_ABI } from "../contracts/helperAbi.js";
-// HELPER_ABI provides: isLiquidatable(user, lendingPool) → [bool, uint256, uint256, uint256]
 
 // ---------------------------------------------------------------------------
 // Config schema
 // ---------------------------------------------------------------------------
 
 const poolSchema = z.object({
-  lendingPool: z.string(), // LendingPool proxy address (entry point for liquidation)
-  router: z.string(),      // LendingPoolRouter address (used in checkLiquidatable)
-  borrowToken: z.string(), // Borrow token address (e.g. USDC)
+  lendingPool: z.string(),
+  router: z.string(),
+  borrowToken: z.string(),
 });
 
 const configSchema = z.object({
   schedule: z.string().default("*/30 * * * * *"),
   chainSelectorName: z.string().default("ethereum-testnet-sepolia-worldchain-1"),
-  helperAddress: z.string(),   // Helper contract address
-  indexerUrl: z.string(),        // e.g. "https://orbita.senja.finance/graphql"
+  helperAddress: z.string(),
+  indexerUrl: z.string(),
   enableLiquidation: z.boolean().default(false),
   pools: z.array(poolSchema),
 });
@@ -53,20 +52,37 @@ const configSchema = z.object({
 type Config = z.infer<typeof configSchema>;
 
 // ---------------------------------------------------------------------------
-// Fetch borrowers from Orbita indexer (Ponder GraphQL)
+// Helpers
 // ---------------------------------------------------------------------------
+
+// Values from isLiquidatable() are scaled by 1e18
+function formatUsd(value: bigint): string {
+  const whole = value / 10n ** 18n;
+  const frac = ((value % 10n ** 18n) * 100n) / 10n ** 18n;
+  return `$${whole}.${frac.toString().padStart(2, "0")}`;
+}
+
+// ---------------------------------------------------------------------------
+// Fetch borrowers from Orbita indexer (Ponder GraphQL)
+// Fetch ALL borrowDebts then filter client-side to avoid address case mismatch
+// ---------------------------------------------------------------------------
+
+interface BorrowDebt {
+  user: string;
+  lendingPoolAddress: string;
+  amount: string;
+}
 
 async function fetchBorrowersFromIndexer(
   indexerUrl: string,
   lendingPool: string,
 ): Promise<string[]> {
   const query = `{
-    borrows(
-      where: { lendingPool: "${lendingPool.toLowerCase()}" }
-      limit: 200
-    ) {
+    borrowDebts(limit: 500) {
       items {
-        borrower
+        user
+        lendingPoolAddress
+        amount
       }
     }
   }`;
@@ -83,26 +99,42 @@ async function fetchBorrowersFromIndexer(
     }
 
     const json = (await resp.json()) as {
-      data?: { borrows?: { items?: { borrower: string }[] } };
+      data?: { borrowDebts?: { items?: BorrowDebt[] } };
     };
-    return (json?.data?.borrows?.items ?? []).map((item) => item.borrower);
+
+    const lendingPoolLower = lendingPool.toLowerCase();
+
+    return (json?.data?.borrowDebts?.items ?? [])
+      .filter(
+        (item) =>
+          item.lendingPoolAddress.toLowerCase() === lendingPoolLower &&
+          BigInt(item.amount ?? "0") > 0n,
+      )
+      .map((item) => item.user);
   } catch {
     return [];
   }
 }
 
 // ---------------------------------------------------------------------------
-// On-chain: check if borrower is liquidatable via Helper.isLiquidatable()
-// Returns [liquidatable, borrowValue, collateralValue, liquidationBonus]
+// On-chain: check health via Helper.isLiquidatable()
+// Returns [liquidatable, borrowValue (1e18), collateralValue (1e18), bonus (1e18)]
 // ---------------------------------------------------------------------------
 
-function checkLiquidatable(
+interface HealthResult {
+  liquidatable: boolean;
+  borrowValue: bigint;
+  collateralValue: bigint;
+  bonus: bigint;
+}
+
+function checkHealth(
   runtime: Runtime<Config>,
   evmClient: EVMClient,
   borrower: string,
   lendingPool: string,
   helperAddress: string,
-): boolean {
+): HealthResult | null {
   try {
     const callData = encodeFunctionData({
       abi: HELPER_ABI,
@@ -121,25 +153,22 @@ function checkLiquidatable(
       })
       .result();
 
-    const [isLiquidatable, borrowValue, collateralValue] =
+    const [liquidatable, borrowValue, collateralValue, bonus] =
       decodeFunctionResult({
         abi: HELPER_ABI,
         functionName: "isLiquidatable",
         data: bytesToHex(result.data),
       }) as [boolean, bigint, bigint, bigint];
 
-    runtime.log(
-      `[HEALTH] ${borrower}: liquidatable=${isLiquidatable} borrow=${borrowValue} collateral=${collateralValue}`,
-    );
-    return isLiquidatable;
+    return { liquidatable, borrowValue, collateralValue, bonus };
   } catch (err) {
     runtime.log(`[ERROR] isLiquidatable(${borrower}): ${String(err)}`);
-    return false;
+    return null;
   }
 }
 
 // ---------------------------------------------------------------------------
-// On-chain: approve borrow token for lendingPool
+// On-chain: approve borrow token for lendingPool (once per pool per cycle)
 // ---------------------------------------------------------------------------
 
 function approveToken(
@@ -176,7 +205,7 @@ function approveToken(
       return false;
     }
 
-    runtime.log(`[APPROVE] ${tokenAddress} -> spender=${spender} tx=${resp.txHash}`);
+    runtime.log(`[APPROVE] token=${tokenAddress} spender=${spender} tx=${resp.txHash}`);
     return true;
   } catch (err) {
     runtime.log(`[ERROR] approve: ${String(err)}`);
@@ -252,29 +281,25 @@ const onCronTrigger = async (runtime: Runtime<Config>): Promise<string> => {
   }
 
   const evmClient = new EVMClient(network.chainSelector.selector);
-
-  // Track approved pools to avoid re-approving each borrower
   const approvedPools = new Set<string>();
 
   let totalChecked = 0;
   let totalLiquidated = 0;
 
   for (const pool of config.pools) {
-    runtime.log(`[POOL] lendingPool=${pool.lendingPool} router=${pool.router}`);
+    runtime.log(`[POOL] lendingPool=${pool.lendingPool}`);
 
-    // Fetch borrowers from the Orbita indexer
     const borrowers = await fetchBorrowersFromIndexer(
       config.indexerUrl,
       pool.lendingPool,
     );
 
-    runtime.log(`[POOL] ${borrowers.length} borrowers found`);
+    runtime.log(`[POOL] ${borrowers.length} active borrowers`);
 
     for (const borrower of borrowers) {
       totalChecked++;
 
-      // Check health on-chain via Helper.isLiquidatable(user, lendingPool)
-      const isLiquidatable = checkLiquidatable(
+      const health = checkHealth(
         runtime,
         evmClient,
         borrower,
@@ -282,47 +307,46 @@ const onCronTrigger = async (runtime: Runtime<Config>): Promise<string> => {
         config.helperAddress,
       );
 
-      if (!isLiquidatable) {
+      if (!health) continue;
+
+      const { liquidatable, borrowValue, collateralValue, bonus } = health;
+
+      runtime.log(
+        `[HEALTH] borrower=${borrower}` +
+        ` | liquidatable=${liquidatable}` +
+        ` | borrowValue=${formatUsd(borrowValue)}` +
+        ` | collateralValue=${formatUsd(collateralValue)}` +
+        ` | bonus=${formatUsd(bonus)}`,
+      );
+
+      if (!liquidatable) {
         runtime.log(`[OK] ${borrower}: healthy`);
         continue;
       }
 
-      runtime.log(`[LIQUIDATABLE] ${borrower}`);
+      runtime.log(`[LIQUIDATABLE] ${borrower}: borrow=${formatUsd(borrowValue)} > collateral threshold`);
 
       if (!config.enableLiquidation) {
-        runtime.log(`[SKIP] enableLiquidation=false, not executing`);
+        runtime.log(`[SKIP] enableLiquidation=false`);
         continue;
       }
 
       // Approve borrow token once per pool per cycle
       if (!approvedPools.has(pool.lendingPool)) {
-        const ok = approveToken(
-          runtime,
-          evmClient,
-          pool.borrowToken,
-          pool.lendingPool,
-        );
+        const ok = approveToken(runtime, evmClient, pool.borrowToken, pool.lendingPool);
         if (!ok) {
-          runtime.log(`[ERROR] approve failed for pool ${pool.lendingPool}, skipping pool`);
+          runtime.log(`[ERROR] approve failed, skipping pool`);
           break;
         }
         approvedPools.add(pool.lendingPool);
       }
 
-      // Execute liquidation
-      const success = executeLiquidation(
-        runtime,
-        evmClient,
-        borrower,
-        pool.lendingPool,
-      );
+      const success = executeLiquidation(runtime, evmClient, borrower, pool.lendingPool);
       if (success) totalLiquidated++;
     }
   }
 
-  runtime.log(
-    `[DONE] checked=${totalChecked} liquidated=${totalLiquidated} ts=${ts}`,
-  );
+  runtime.log(`[DONE] checked=${totalChecked} liquidated=${totalLiquidated} ts=${ts}`);
   return "complete";
 };
 
