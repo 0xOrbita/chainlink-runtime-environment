@@ -1,13 +1,13 @@
-# Nuro-Fi Custom Data Feed & Liquidation Keeper 🤖
+# Orbita Custom Data Feed & Liquidation Keeper 🤖
 
-This project contains the Chainlink CRE (Custom Runtime Environment) Workflows powering the Nuro-Fi decentralized lending protocol. It handles real-world Oracle price Discovery and autonomous position Liquidations.
+This project contains the Chainlink CRE (Custom Runtime Environment) Workflows powering the Orbita decentralized lending protocol. It handles real-world Oracle price Discovery and autonomous position Liquidations.
 
 ## Repository Structure
 
 The project is split into two primary Chainlink CRE workflows:
 
 1. **`data-feed-workflow/`**: Responsible for polling off-chain API prices (such as Binance) and pushing updates to the on-chain Oracle smart contracts. 
-2. **`liqudate-workflow/`**: Responsible for scanning the Nuro-Fi Lending Pools, verifying borrower Health Factors (`isLiquidatable`), and executing smart contract Liquidations.
+2. **`liqudate-workflow/`**: Responsible for scanning the Orbita Lending Pools, verifying borrower Health Factors (`isLiquidatable`), and executing smart contract Liquidations.
 
 ## Prerequisites
 

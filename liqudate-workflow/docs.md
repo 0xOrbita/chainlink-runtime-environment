@@ -1,6 +1,6 @@
 # Liquidation Workflow
 
-Cron-triggered CRE workflow that monitors Nuro-Fi lending pools, detects undercollateralized positions, and executes liquidations.
+Cron-triggered CRE workflow that monitors Orbita lending pools, detects undercollateralized positions, and executes liquidations.
 
 ## Prerequisites
 
