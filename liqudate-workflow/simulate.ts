@@ -171,6 +171,20 @@ async function main() {
       console.log(`  collateralValue: ${formatUsd(collateralValue)}`);
       console.log(`  bonus         : ${formatUsd(bonus)}`);
 
+      if (borrowValue === 0n && collateralValue === 0n) {
+        console.log(`  → ALREADY LIQUIDATED (0 balance), skip`);
+        summaryTable.push({
+          Pool: pool.lendingPool,
+          Borrower: borrower,
+          Health: "ZERO_BALANCE",
+          Borrow: "$0.00",
+          Collateral: "$0.00",
+          Action: "SKIPPED",
+          Tx: "-",
+        });
+        continue;
+      }
+
       if (!liquidatable) {
         console.log(`  → HEALTHY, skip`);
         summaryTable.push({

@@ -10,28 +10,22 @@ else
   echo "[!] Warning: No .env file found in root directory"
 fi
 
-echo "Starting both Custom Data Feed and Liquidation workflows in parallel mode..."
+echo "Starting both Custom Data Feed and Liquidation workflows in sequential mode..."
 
 # Function for cleanup gracefully handling CTRL+C
 cleanup() {
     echo -e "\nStopping workflows..."
-    kill 0
     exit 1
 }
 
-# Catch the EXIT signal and CTRL+C to stop both background processes
+# Catch the EXIT signal and CTRL+C
 trap "cleanup" SIGINT SIGTERM
 
-# Enter data-feed-workflow
-cd data-feed-workflow && \
-echo ">>> Starting data-feed-workflow simulator..." && \
-bun run simulate:direct &
+# Execute data-feed-workflow
+echo ">>> Starting data-feed-workflow simulator..."
+(cd data-feed-workflow && bun run simulate:direct)
 
-# Enter liqudate-workflow
-cd liqudate-workflow && \
-echo ">>> Starting liqudate-workflow simulator..." && \
-bun run simulate:direct &
-
-# Wait for both processes to complete or for user interrupt
-wait
+# Execute liqudate-workflow
+echo ">>> Starting liqudate-workflow simulator..."
+(cd liqudate-workflow && bun run simulate:direct)
 echo "All executions complete."

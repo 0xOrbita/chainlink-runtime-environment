@@ -37,29 +37,42 @@ They configure:
 - The array of `oracles` configurations (Source addresses and feed IDs)
 
 
-## 4. Local Simulation
-The CRE simulator allows you to mock network interactions against local logic. We use it to verify the workflow functionality offline.
+## 4. Local Simulation (Single Workflow)
+To test either the Data Feed or Liquidation workflows directly against the blockchain (without using the Chainlink DON simulator), you can run the direct on-chain script. 
 
-Ensure you are at the project root `custom-data-feed` when running the simulation so it picks up the correct config values out of `project.yaml`.
+Make sure `.env` is configured with your `CRE_ETH_PRIVATE_KEY` at the root of the project.
 
-Run a local simulation using `cre workflow simulate`:
-
+**To run only the Data Feed Evaluator:**
 ```bash
-cre workflow simulate ./data-feed-workflow --target local-simulation
-```
-
-## 5. Deploying to Testnet
-When you are ready, you can deploy the finalized workflow script to the Testnet DON (Decentralized Oracle Network).
-
-```bash
-cre workflow deploy ./data-feed-workflow --target production-settings
-```
-
-```bash
-CRE_ETH_PRIVATE_KEY=$(grep 'CRE_ETH_PRIVATE_KEY=' ../.env | cut -d '=' -f2) bun run simulate.ts
-```
-
-## 6. Run simulate:direct onchain
-```bash
+cd data-feed-workflow
 bun run simulate:direct
+```
+*Note: The Data Feed script (`simulate.ts`) is configured with a `USE_BINANCE_PRICES` toggle. If true, it pulls real-time BTC/ETH prices from Binance. If false (or if the API fails), it gracefully falls back to mock prices like $60k for WBTC.*
+
+**To run only the Liquidation Evaluator:**
+```bash
+cd liqudate-workflow
+bun run simulate:direct
+```
+
+## 5. Sequential Simulation (Both Workflows)
+You can run both workflows sequentially in a single command from the root directory. This will first update the Oracle prices and then evaluate liquidations based on the fresh data.
+
+```bash
+# Ensure it is executable first
+chmod +x run-local.sh 
+
+# Run from the root directory
+./run-local.sh
+```
+
+## 6. Official CRE Simulator & Deployment
+If you wish to test the scripts strictly within the official sandboxed CRE simulator environment or deploy them to the active Testnet DON:
+
+```bash
+# Run local CRE sandbox simulation
+cre workflow simulate ./data-feed-workflow --target local-simulation
+
+# Deploy to Production Testnet
+cre workflow deploy ./data-feed-workflow --target production-settings
 ```
