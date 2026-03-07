@@ -2,7 +2,7 @@
  * Orbita CRE Liquidation Workflow
  *
  * Cron-triggered workflow that:
- * 1. Fetches active borrowers from the Orbita indexer (orbita.senja.finance)
+ * 1. Fetches active borrowers from the Orbita indexer
  * 2. Checks each borrower's health via Helper.isLiquidatable()
  * 3. If undercollateralized, approves borrow token and calls liquidation()
  */

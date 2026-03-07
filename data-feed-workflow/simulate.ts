@@ -27,12 +27,12 @@ const USE_REAL_PRICES = false; // Set to false to use mock prices
 
 // Mock price configurations
 const MOCK_BASE_PRICE = 100000000n; // $1.00
-const MOCK_WETH_PRICE = 200000000000n; // $1900.00
-const MOCK_WBTC_PRICE = 7000000000000n; // $60000.00
+const MOCK_WETH_PRICE = 200000000000n; // $2000.00
+const MOCK_WBTC_PRICE = 700000000000n; // $60000.00
 
 // Map Oracle names to MEXC symbols
 const MEXC_SYMBOL_MAP: Record<string, string> = {
-  "USDT/USD": "USDTUSDC", // MEXC doesn't have USDTBIDR, we'll map to USDC for a 1:1 proxy or handle via $1 mock
+  "USDT/USD": "USDTUSDC",
   "NATIVE/USD": "USDTUSDC",
   "WETH/USD": "ETHUSDT",
   "WBTC/USD": "BTCUSDT",
