@@ -170,13 +170,20 @@ export const HELPER_ABI = [
   },
 ] as const;
 
-// LendingPool contract - liquidation entry point
+// LendingPool contract - liquidation entry point + view functions
 export const LENDING_POOL_ABI = [
   {
     inputs: [{ internalType: "address", name: "_borrower", type: "address" }],
     name: "liquidation",
     outputs: [],
     stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "borrowToken",
+    outputs: [{ internalType: "address", name: "", type: "address" }],
+    stateMutability: "view",
     type: "function",
   },
 ] as const;

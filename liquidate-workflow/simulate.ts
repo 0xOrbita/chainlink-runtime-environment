@@ -85,8 +85,13 @@ function calculateHealthFactor(
 }
 
 // ---------------------------------------------------------------------------
-// Fetch borrowers dari Orbita indexer
+// Fetch semua lending pools + borrowers dari Orbita indexer
 // ---------------------------------------------------------------------------
+
+interface PoolInfo {
+  lendingPool: string;
+  borrowToken: string;
+}
 
 interface BorrowDebt {
   user: string;
@@ -94,75 +99,55 @@ interface BorrowDebt {
   amount: string;
 }
 
-async function fetchBorrowers(
-  indexerUrl: string,
-  lendingPool: string,
-): Promise<string[]> {
-  const query = `{
-    borrowDebts(limit: 500) {
-      items {
-        user
-        lendingPoolAddress
-        amount
-      }
-    }
-  }`;
-
+async function graphql<T>(indexerUrl: string, query: string): Promise<T> {
   const resp = await fetch(indexerUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query }),
   });
-
   if (!resp.ok) throw new Error(`Indexer HTTP error: ${resp.status}`);
-
-  const json = (await resp.json()) as {
-    data?: { borrowDebts?: { items?: BorrowDebt[] } };
-  };
-
-  const lendingPoolLower = lendingPool.toLowerCase();
-  const users = (json?.data?.borrowDebts?.items ?? [])
-    .filter(
-      (item) =>
-        item.lendingPoolAddress.toLowerCase() === lendingPoolLower &&
-        BigInt(item.amount ?? "0") > 0n,
-    )
-    .map((item) => item.user);
-
-  return [...new Set(users)];
+  return resp.json() as Promise<T>;
 }
 
-async function fetchLiquidationThresholds(
+async function fetchAllPools(
   indexerUrl: string,
-): Promise<Map<string, number>> {
-  const query = `query MyQuery {
-    liquidationThresholdSets {
-      items {
-        lendingPool
-        threshold
-      }
-    }
-  }`;
+): Promise<Map<string, PoolInfo>> {
+  const json = await graphql<{
+    data?: { lendingPoolCreateds?: { items?: PoolInfo[] } };
+  }>(
+    indexerUrl,
+    `{ lendingPoolCreateds(limit: 500) { items { lendingPool borrowToken } } }`,
+  );
 
-  const resp = await fetch(indexerUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query }),
-  });
-
-  if (!resp.ok) throw new Error(`Indexer HTTP error: ${resp.status}`);
-
-  const json = (await resp.json()) as any;
-  const items = json?.data?.liquidationThresholdSets?.items ?? [];
-
-  const thresholds = new Map<string, number>();
-  for (const item of items) {
-    if (item.lendingPool && item.threshold) {
-      const t = Number(item.threshold) / 1e18;
-      thresholds.set(item.lendingPool.toLowerCase(), t);
-    }
+  const pools = new Map<string, PoolInfo>();
+  for (const item of json?.data?.lendingPoolCreateds?.items ?? []) {
+    pools.set(item.lendingPool.toLowerCase(), item);
   }
-  return thresholds;
+  return pools;
+}
+
+async function fetchBorrowersByPool(
+  indexerUrl: string,
+): Promise<Map<string, string[]>> {
+  const json = await graphql<{
+    data?: { borrowDebts?: { items?: BorrowDebt[] } };
+  }>(
+    indexerUrl,
+    `{ borrowDebts(limit: 1000) { items { user lendingPoolAddress amount } } }`,
+  );
+
+  const poolBorrowers = new Map<string, string[]>();
+  for (const item of json?.data?.borrowDebts?.items ?? []) {
+    if (BigInt(item.amount ?? "0") <= 0n) continue;
+    const pool = item.lendingPoolAddress.toLowerCase();
+    if (!poolBorrowers.has(pool)) poolBorrowers.set(pool, []);
+    poolBorrowers.get(pool)!.push(item.user);
+  }
+  // deduplicate
+  for (const [pool, users] of poolBorrowers) {
+    poolBorrowers.set(pool, [...new Set(users)]);
+  }
+  return poolBorrowers;
 }
 
 // ---------------------------------------------------------------------------
@@ -190,39 +175,38 @@ async function main() {
   const balance = await publicClient.getBalance({ address: account.address });
   console.log(`ETH balance: ${balance} wei\n`);
 
-  // Track approved pools
   const approvedPools = new Set<string>();
   const summaryTable: any[] = [];
 
-  // Fetch all thresholds first
-  let thresholdsMap = new Map<string, number>();
+  // 1. Fetch semua pools (lendingPool + borrowToken) dan borrowers dari indexer
+  let pools: Map<string, PoolInfo>;
+  let poolBorrowers: Map<string, string[]>;
   try {
-    thresholdsMap = await fetchLiquidationThresholds(config.indexerUrl);
+    [pools, poolBorrowers] = await Promise.all([
+      fetchAllPools(config.indexerUrl),
+      fetchBorrowersByPool(config.indexerUrl),
+    ]);
   } catch (e: any) {
-    console.log(
-      `[WARN] Thresholds fetch failed, defaulting to 0.8: ${e.message}`,
-    );
+    console.log(`[ERROR] Indexer fetch failed: ${e.message}`);
+    return;
   }
 
-  for (const pool of config.pools) {
-    // 1. Fetch borrowers from indexer
-    let borrowers: string[];
-    try {
-      borrowers = await fetchBorrowers(config.indexerUrl, pool.lendingPool);
-    } catch (e: any) {
-      console.log(`[ERROR] Indexer fetch failed: ${e.message}`);
+  console.log(`\nDiscovered ${pools.size} lending pools from indexer`);
+
+  const width = 80;
+  const borderLine = "─".repeat(width);
+  const logRow = (text: string) => {
+    console.log(`│ ${text.padEnd(width - 2, " ")} │`);
+  };
+
+  for (const [poolKey, borrowers] of poolBorrowers) {
+    const pool = pools.get(poolKey);
+    if (!pool) {
+      console.log(`[WARN] No pool info for ${poolKey}, skipping`);
       continue;
     }
 
-    if (borrowers.length === 0) {
-      continue;
-    }
-
-    const width = 80;
-    const borderLine = "─".repeat(width);
-    const logRow = (text: string) => {
-      console.log(`│ ${text.padEnd(width - 2, " ")} │`);
-    };
+    if (borrowers.length === 0) continue;
 
     console.log(`\n┌${borderLine}┐`);
     logRow(`POOL SUMMARY`);
@@ -231,8 +215,6 @@ async function main() {
     logRow(`Borrow Token: ${pool.borrowToken}`);
     console.log(`└${borderLine}┘`);
 
-    // Filter out borrowers who definitely have 0 balance early on if possible,
-    // or we skip them during string iteration.
     let activeBorrowersCount = 0;
 
     for (const borrower of borrowers) {
@@ -240,10 +222,9 @@ async function main() {
       let liquidatable: boolean;
       let borrowValue: bigint;
       let collateralValue: bigint;
-      let bonus: bigint;
 
       try {
-        [liquidatable, borrowValue, collateralValue, bonus] =
+        [liquidatable, borrowValue, collateralValue] =
           (await publicClient.readContract({
             address: config.helperAddress as Address,
             abi: HELPER_ABI,
@@ -257,14 +238,9 @@ async function main() {
         continue;
       }
 
-      if (borrowValue === 0n && collateralValue === 0n) {
-        continue;
-      }
+      if (borrowValue === 0n && collateralValue === 0n) continue;
 
       activeBorrowersCount++;
-
-      const poolLendingLower = pool.lendingPool.toLowerCase();
-      const poolRouterLower = pool.router ? pool.router.toLowerCase() : "";
 
       const { hf, status: hfStatus } = calculateHealthFactor(
         collateralValue,
@@ -327,18 +303,13 @@ async function main() {
           });
 
           process.stdout.write(
-            `│ [APPROVE]     Waiting for tx confirmation...`.padEnd(
-              width,
-              " ",
-            ) + `│\r`,
+            `│ [APPROVE]     Waiting for tx confirmation...`.padEnd(width, " ") + `│\r`,
           );
           await publicClient.waitForTransactionReceipt({ hash: approveTx });
           logRow(`[APPROVE]     Confirmed: ${approveTx}`);
           approvedPools.add(pool.lendingPool);
         } catch (e: any) {
-          logRow(
-            `[ERROR]       approve failed: ${e.shortMessage || e.message}`,
-          );
+          logRow(`[ERROR]       approve failed: ${e.shortMessage || e.message}`);
           console.log(`└${borderLine}┘`);
           break;
         }
@@ -354,17 +325,14 @@ async function main() {
         });
 
         process.stdout.write(
-          `│ [LIQUIDATE]   Waiting for tx confirmation...`.padEnd(width, " ") +
-            `│\r`,
+          `│ [LIQUIDATE]   Waiting for tx confirmation...`.padEnd(width, " ") + `│\r`,
         );
 
         const receipt = await publicClient.waitForTransactionReceipt({
           hash: liquidateTx,
         });
         logRow(`[LIQUIDATED]  Tx: ${liquidateTx}`);
-        logRow(
-          `[LIQUIDATED]  Block: ${receipt.blockNumber} (Status: ${receipt.status})`,
-        );
+        logRow(`[LIQUIDATED]  Block: ${receipt.blockNumber} (Status: ${receipt.status})`);
         console.log(`└${borderLine}┘`);
 
         summaryTable.push({
@@ -377,9 +345,7 @@ async function main() {
           Tx: liquidateTx,
         });
       } catch (e: any) {
-        logRow(
-          `[ERROR]       liquidation failed: ${e.shortMessage || e.message}`,
-        );
+        logRow(`[ERROR]       liquidation failed: ${e.shortMessage || e.message}`);
         console.log(`└${borderLine}┘`);
 
         summaryTable.push({
@@ -394,9 +360,7 @@ async function main() {
       }
     }
 
-    console.log(
-      `\nActive borrowers processed for pool: ${activeBorrowersCount}`,
-    );
+    console.log(`\nActive borrowers processed for pool: ${activeBorrowersCount}`);
   }
 
   console.log(`\n\n======================================`);

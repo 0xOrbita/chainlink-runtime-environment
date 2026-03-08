@@ -40,12 +40,6 @@ import {
 // Config schema
 // ---------------------------------------------------------------------------
 
-const poolSchema = z.object({
-  lendingPool: z.string(),
-  router: z.string(),
-  borrowToken: z.string(),
-});
-
 const configSchema = z.object({
   schedule: z.string().default("*/30 * * * * *"),
   chainSelectorName: z
@@ -54,7 +48,6 @@ const configSchema = z.object({
   helperAddress: z.string(),
   indexerUrl: z.string(),
   enableLiquidation: z.boolean().default(false),
-  pools: z.array(poolSchema),
 });
 
 type Config = z.infer<typeof configSchema>;
@@ -70,10 +63,24 @@ function formatUsd(value: bigint): string {
   return `$${whole}.${frac.toString().padStart(2, "0")}`;
 }
 
+// Fisher-Yates shuffle so each cycle checks a random subset of borrowers
+function shuffle<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
 // ---------------------------------------------------------------------------
-// Fetch borrowers from Orbita indexer (Ponder GraphQL)
-// Fetch ALL borrowDebts then filter client-side to avoid address case mismatch
+// Fetch all lending pools (with borrowToken) + borrowers from indexer
 // ---------------------------------------------------------------------------
+
+interface PoolInfo {
+  lendingPool: string;
+  borrowToken: string;
+}
 
 interface BorrowDebt {
   user: string;
@@ -81,25 +88,18 @@ interface BorrowDebt {
   amount: string;
 }
 
-async function fetchBorrowersFromIndexer(
+interface IndexerData {
+  pools: Map<string, PoolInfo>; // lendingPool (lower) -> PoolInfo
+  poolBorrowers: Map<string, string[]>; // lendingPool (lower) -> users
+}
+
+function sendIndexerRequest(
   runtime: Runtime<Config>,
   indexerUrl: string,
-  lendingPool: string,
-): Promise<string[]> {
-  const query = `{
-    borrowDebts(limit: 500) {
-      items {
-        user
-        lendingPoolAddress
-        amount
-      }
-    }
-  }`;
-
+  query: string,
+): string | null {
   try {
     const client = new HTTPClient();
-
-    // Use native CRE HttpCapability for POST request
     const responseFn = client.sendRequest(
       runtime as unknown as NodeRuntime<Config>,
       {
@@ -109,33 +109,75 @@ async function fetchBorrowersFromIndexer(
         body: Buffer.from(JSON.stringify({ query })).toString("base64"),
       },
     );
-
     const response = responseFn.result();
-
     if (response.statusCode < 200 || response.statusCode >= 300) {
       runtime.log(`[WARN] Indexer HTTP Error: ${response.statusCode}`);
-      return [];
+      return null;
     }
+    return Buffer.from(response.body).toString("utf-8");
+  } catch (err) {
+    runtime.log(`[ERROR] Indexer request failed: ${String(err)}`);
+    return null;
+  }
+}
 
-    const rawBody = Buffer.from(response.body).toString("utf-8");
-    const json = JSON.parse(rawBody) as {
+async function fetchIndexerData(
+  runtime: Runtime<Config>,
+  indexerUrl: string,
+): Promise<IndexerData> {
+  const pools = new Map<string, PoolInfo>();
+  const poolBorrowers = new Map<string, string[]>();
+
+  // Query 1: all lending pools with their borrowToken
+  const poolsQuery = `{
+    lendingPoolCreateds(limit: 500) {
+      items {
+        lendingPool
+        borrowToken
+      }
+    }
+  }`;
+
+  const poolsRaw = sendIndexerRequest(runtime, indexerUrl, poolsQuery);
+  if (poolsRaw) {
+    const json = JSON.parse(poolsRaw) as {
+      data?: { lendingPoolCreateds?: { items?: PoolInfo[] } };
+    };
+    for (const item of json?.data?.lendingPoolCreateds?.items ?? []) {
+      pools.set(item.lendingPool.toLowerCase(), {
+        lendingPool: item.lendingPool,
+        borrowToken: item.borrowToken,
+      });
+    }
+  }
+
+  runtime.log(`[DISCOVERY] Found ${pools.size} lending pools from indexer`);
+
+  // Query 2: all active borrowDebts
+  const debtsQuery = `{
+    borrowDebts(limit: 1000) {
+      items {
+        user
+        lendingPoolAddress
+        amount
+      }
+    }
+  }`;
+
+  const debtsRaw = sendIndexerRequest(runtime, indexerUrl, debtsQuery);
+  if (debtsRaw) {
+    const json = JSON.parse(debtsRaw) as {
       data?: { borrowDebts?: { items?: BorrowDebt[] } };
     };
-
-    const lendingPoolLower = lendingPool.toLowerCase();
-
-    return (json?.data?.borrowDebts?.items ?? [])
-      .filter(
-        (item) =>
-          item.lendingPoolAddress.toLowerCase() === lendingPoolLower &&
-          BigInt(item.amount ?? "0") > 0n,
-      )
-      .map((item) => item.user)
-      .slice(0, 15); 
-  } catch (err) {
-    runtime.log(`[ERROR] Indexer Fetch Failed: ${String(err)}`);
-    return [];
+    for (const item of json?.data?.borrowDebts?.items ?? []) {
+      if (BigInt(item.amount ?? "0") <= 0n) continue;
+      const pool = item.lendingPoolAddress.toLowerCase();
+      if (!poolBorrowers.has(pool)) poolBorrowers.set(pool, []);
+      poolBorrowers.get(pool)!.push(item.user);
+    }
   }
+
+  return { pools, poolBorrowers };
 }
 
 // ---------------------------------------------------------------------------
@@ -311,28 +353,40 @@ const onCronTrigger = async (runtime: Runtime<Config>): Promise<string> => {
   const evmClient = new EVMClient(network.chainSelector.selector);
   const approvedPools = new Set<string>();
 
+  // CRE callContract limit per workflow execution
+  const CALL_LIMIT = 15;
+  let callsUsed = 0;
   let totalChecked = 0;
   let totalLiquidated = 0;
 
-  for (const pool of config.pools) {
-    runtime.log(`[POOL] lendingPool=${pool.lendingPool}`);
+  // Fetch all pools (with borrowToken) and active borrowers from indexer
+  const { pools, poolBorrowers } = await fetchIndexerData(runtime, config.indexerUrl);
 
-    const borrowers = await fetchBorrowersFromIndexer(
-      runtime,
-      config.indexerUrl,
-      pool.lendingPool,
+  outer: for (const [lendingPool, borrowers] of poolBorrowers) {
+    const poolInfo = pools.get(lendingPool);
+    if (!poolInfo) {
+      runtime.log(`[WARN] No pool info found for pool=${lendingPool}, skipping`);
+      continue;
+    }
+
+    const { borrowToken } = poolInfo;
+    runtime.log(
+      `[POOL] lendingPool=${lendingPool} borrowToken=${borrowToken} borrowers=${borrowers.length}`,
     );
 
-    runtime.log(`[POOL] ${borrowers.length} active borrowers`);
-
-    for (const borrower of borrowers) {
+    for (const borrower of shuffle(borrowers)) {
+      if (callsUsed >= CALL_LIMIT) {
+        runtime.log(`[LIMIT] callContract limit (${CALL_LIMIT}) reached, stopping cycle early`);
+        break outer;
+      }
       totalChecked++;
+      callsUsed++;
 
       const health = checkHealth(
         runtime,
         evmClient,
         borrower,
-        pool.lendingPool,
+        lendingPool,
         config.helperAddress,
       );
 
@@ -363,26 +417,16 @@ const onCronTrigger = async (runtime: Runtime<Config>): Promise<string> => {
       }
 
       // Approve borrow token once per pool per cycle
-      if (!approvedPools.has(pool.lendingPool)) {
-        const ok = approveToken(
-          runtime,
-          evmClient,
-          pool.borrowToken,
-          pool.lendingPool,
-        );
+      if (!approvedPools.has(lendingPool)) {
+        const ok = approveToken(runtime, evmClient, borrowToken, lendingPool);
         if (!ok) {
           runtime.log(`[ERROR] approve failed, skipping pool`);
           break;
         }
-        approvedPools.add(pool.lendingPool);
+        approvedPools.add(lendingPool);
       }
 
-      const success = executeLiquidation(
-        runtime,
-        evmClient,
-        borrower,
-        pool.lendingPool,
-      );
+      const success = executeLiquidation(runtime, evmClient, borrower, lendingPool);
       if (success) totalLiquidated++;
     }
   }

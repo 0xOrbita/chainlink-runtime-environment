@@ -3,17 +3,5 @@
   "chainSelectorName": "ethereum-testnet-sepolia-worldchain-1",
   "helperAddress": "0xC72f2eb4A97F19ecD0C10b5201676a10B6D8bB67",
   "indexerUrl": "https://indexer.0xorbita.xyz/graphql",
-  "enableLiquidation": true,
-  "pools": [
-    {
-      "lendingPool": "0xc0307ec4a7c139fe5001c9c77f8e76746d3f04ca",
-      "router": "0x52887c747ef32a45b0dd50d2e5a9b5b2ea98d443",
-      "borrowToken": "0x04c37dc1b538e00b31e6bc883e16d97cd7937a10"
-    },
-    {
-      "lendingPool": "0x2492a464bce4f3ab486e05b9dbf16d515ff6efcf",
-      "router": "0x529cc776236a48af40cfc18de4e95e0b89f42388",
-      "borrowToken": "0x04c37dc1b538e00b31e6bc883e16d97cd7937a10"
-    }
-  ]
+  "enableLiquidation": true
 }
